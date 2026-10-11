@@ -1676,6 +1676,54 @@ PluginManager.prototype.getInstalledPlugins = function () {
   return defer.promise;
 };
 
+PluginManager.prototype.getInstalledPluginCategory = function (pluginName) {
+  var self = this;
+  var installed = self.getInstalledPlugins();
+
+  return installed.then(function (plugins) {
+    for (var i = 0; i < plugins.length; i++) {
+      if (plugins[i].name === pluginName) {
+        return plugins[i].category;
+      }
+    }
+    return null;
+  });
+};
+
+PluginManager.prototype.getInstalledPluginVersion = function (category, name) {
+  var self = this;
+  var folder = self.findPluginFolder(category, name);
+  if (!folder) {
+    return null;
+  }
+
+  var package_json = self.getPackageJson(folder);
+  if (!package_json || !package_json.version) {
+    return null;
+  }
+
+  return package_json.version;
+};
+
+PluginManager.prototype.shouldUpdatePlugin = function (category, name, candidateVersion) {
+  var self = this;
+  if (!category || !name || !candidateVersion) {
+    return false;
+  }
+
+  var installedVersion = self.getInstalledPluginVersion(category, name);
+  if (!installedVersion) {
+    return false;
+  }
+
+  try {
+    return compareVersions(candidateVersion, installedVersion) === 1;
+  } catch (e) {
+    self.logger.error('Cannot compare versions for plugin ' + category + '/' + name + ': ' + e);
+    return false;
+  }
+};
+
 PluginManager.prototype.getAvailablePlugins = function () {
   var self = this;
   var defer = libQ.defer();
@@ -1807,41 +1855,73 @@ PluginManager.prototype.getPluginDetails = function (data) {
       });
   });
 
-  function pushDetails (response) {
-    var responseData = {
-      title: response.prettyName,
-      message: response.details,
-      size: 'lg',
-      buttons: []
-    };
+function pushDetails (response) {
+  var responseData = {
+    title: response.prettyName,
+    message: response.details,
+    size: 'lg',
+    buttons: []
+  };
 
-    var allowBeta = fs.existsSync("/data/testplugins");
+  var allowBeta = fs.existsSync("/data/testplugins");
 
-    response.versions.forEach((version) => {
-      if(version.channel === 'stable' || allowBeta){
-        version.variants.forEach((versionVariant) => {
-          if (versionVariant.variant === variant + '/' + os + '/' + arch) {
-            responseData.buttons.push(
-                {
-                  name: 'Install v' + version.version + ' (' + version.channel + ')',
-                  class: 'btn btn-warning',
-                  emit: 'installPlugin',
-                  payload: {'url': 'https://plugins.volumio.workers.dev/pluginsv2/download/' + data.name + '/' + version.version + '/' + variant + '/' + os + '/' + arch }
+  self.getInstalledPluginCategory(data.name)
+    .then(function (installedCategory) {
+      response.versions.forEach((version) => {
+        if (version.channel === 'stable' || allowBeta) {
+          version.variants.forEach((versionVariant) => {
+            if (versionVariant.variant === variant + '/' + os + '/' + arch) {
+              var pluginCategory = installedCategory;
+              var isUpdate = pluginCategory && self.shouldUpdatePlugin(pluginCategory, data.name, version.version);
+
+              responseData.buttons.push({
+                name: 'Install v' + version.version + ' (' + version.channel + ')',
+                class: 'btn btn-warning',
+                emit: isUpdate ? 'updatePlugin' : 'installPlugin',
+                payload: {
+                  url: 'https://plugins.volumio.workers.dev/pluginsv2/download/' + data.name + '/' + version.version + '/' + variant + '/' + os + '/' + arch,
+                  category: pluginCategory,
+                  name: data.name
                 }
-            )
-          }
-        });
-      }
-    })
-    responseData.buttons.push(
-      {
+              });
+            }
+          });
+        }
+      });
+
+      responseData.buttons.push({
         name: self.coreCommand.getI18nString('COMMON.CLOSE'),
         class: 'btn btn-warning'
-      }
-    );
-    defer.resolve(responseData);
-  }
+      });
+      defer.resolve(responseData);
+    })
+    .fail(function () {
+      // fallback: no installed plugin info available, behave like a plain install
+      response.versions.forEach((version) => {
+        if (version.channel === 'stable' || allowBeta) {
+          version.variants.forEach((versionVariant) => {
+            if (versionVariant.variant === variant + '/' + os + '/' + arch) {
+              responseData.buttons.push({
+                name: 'Install v' + version.version + ' (' + version.channel + ')',
+                class: 'btn btn-warning',
+                emit: 'installPlugin',
+                payload: {
+                  url: 'https://plugins.volumio.workers.dev/pluginsv2/download/' + data.name + '/' + version.version + '/' + variant + '/' + os + '/' + arch
+                }
+              });
+            }
+          });
+        }
+      });
 
+      responseData.buttons.push({
+        name: self.coreCommand.getI18nString('COMMON.CLOSE'),
+        class: 'btn btn-warning'
+      });
+      defer.resolve(responseData);
+    });
+}
+  
   return defer.promise;
 };
 
